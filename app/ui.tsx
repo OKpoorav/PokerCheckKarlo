@@ -147,8 +147,10 @@ const fmtDay = (d: string) => new Date(d).toLocaleDateString("en-IN", { day: "nu
 // Past sessions with instant client-side search by name or date.
 export function SessionList({
   sessions,
+  showPot,
 }: {
-  sessions: { id: number; name: string; created_at: string; rounds: number; players: number; net: number }[];
+  sessions: { id: number; name: string; created_at: string; rounds: number; players: number; net: number; live?: boolean }[];
+  showPot?: boolean; // admin view: `net` holds the pot, shown neutral
 }) {
   const [q, setQ] = useState("");
   const needle = q.trim().toLowerCase();
@@ -181,9 +183,14 @@ export function SessionList({
                 {fmtDay(g.created_at)} · {g.players} players · {g.rounds} rounds
               </p>
             </div>
+            {g.live && <span className="rounded-full bg-green/15 px-2 py-0.5 text-[11px] font-semibold text-green">LIVE</span>}
+            {showPot ? (
+              <span className="font-semibold tabular-nums text-secondary">{g.net.toLocaleString("en-IN")}</span>
+            ) : (
             <span className={`font-semibold tabular-nums ${g.net > 0 ? "text-green" : g.net < 0 ? "text-red" : "text-secondary"}`}>
               {g.net > 0 ? "+" : g.net < 0 ? "−" : ""}{Math.abs(g.net).toLocaleString("en-IN")}
             </span>
+            )}
           </Link>
         ))}
         {!shown.length && <p className="px-4 py-6 text-center text-[15px] text-secondary">No sessions match “{q}”</p>}
@@ -198,10 +205,10 @@ export function SettleForm({
   pot,
 }: {
   action: (prev: string | null, form: FormData) => Promise<string | null>;
-  players: { id: number; name: string; bought: number }[];
+  players: { id: number; name: string; bought: number; cashout?: number | null }[];
   pot: number;
 }) {
-  const [total, setTotal] = useState(0);
+  const [total, setTotal] = useState(() => players.reduce((s, p) => s + (p.cashout ?? 0), 0));
   const sum = (form: HTMLFormElement) =>
     setTotal(players.reduce((s, p) => s + (Number((form.elements.namedItem(`cashout_${p.id}`) as HTMLInputElement).value) || 0), 0));
   const diff = Math.round((total - pot) * 100) / 100;
@@ -216,7 +223,7 @@ export function SettleForm({
               <p>{p.name}</p>
               <p className="text-[13px] text-secondary">In for {p.bought.toLocaleString("en-IN")}</p>
             </div>
-            <input name={`cashout_${p.id}`} type="number" inputMode="decimal" min="0" step="0.01" placeholder="0" className="field w-32 py-2 text-right tabular-nums" />
+            <input name={`cashout_${p.id}`} defaultValue={p.cashout ?? undefined} type="number" inputMode="decimal" min="0" step="0.01" placeholder="0" className="field w-32 py-2 text-right tabular-nums" />
           </label>
         ))}
       </div>
@@ -362,5 +369,14 @@ export function Picker({
         </div>
       )}
     </div>
+  );
+}
+
+// Destructive button that asks first.
+export function ConfirmButton({ action, confirm, children }: { action: () => Promise<void>; confirm: string; children: React.ReactNode }) {
+  return (
+    <form action={action} onSubmit={(e) => !window.confirm(confirm) && e.preventDefault()}>
+      <Submit className="press w-full rounded-2xl border border-red/30 bg-red/10 py-3 text-[15px] font-semibold text-red">{children}</Submit>
+    </form>
   );
 }

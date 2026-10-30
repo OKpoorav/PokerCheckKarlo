@@ -1,8 +1,8 @@
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { db, money, signed } from "@/lib/db";
-import { addBuyIn, addPlayer, deleteBuyIn, settle } from "../../actions";
-import { ActionForm, AmountChips, AutoRefresh, Chip, Header, Picker, RoundMeter, SettleForm, Submit } from "../../ui";
+import { addBuyIn, addPlayer, deleteBuyIn, deleteGame, removePlayer, renameGame, reopenGame, settle } from "../../actions";
+import { ActionForm, AmountChips, AutoRefresh, Chip, ConfirmButton, Header, Picker, RoundMeter, SettleForm, Submit } from "../../ui";
 
 const tone = (n: number) => (n > 0 ? "text-green" : n < 0 ? "text-red" : "text-secondary");
 
@@ -28,6 +28,8 @@ export default async function SessionPage({ params }: PageProps<"/s/[id]">) {
 
   const live = !game.ended_at;
   const isHost = game.host_id === me.id;
+  // Host runs their own table; admins can manage any session (server actions enforce the same rule).
+  const canManage = isHost || me.is_admin;
   const pot = players.reduce((s, p) => s + p.bought, 0);
   const myBought = players.find((p) => p.id === me.id)?.bought ?? 0;
 
@@ -43,17 +45,17 @@ export default async function SessionPage({ params }: PageProps<"/s/[id]">) {
         Hosted by {isHost ? "you" : game.host_name} · Pot <span className="font-semibold text-label tabular-nums">{money(pot)}</span>
       </p>
 
-      <RoundMeter gameId={id} rounds={game.rounds} canTap={live && isPlayer} />
+      <RoundMeter gameId={id} rounds={game.rounds} canTap={live && (isPlayer || me.is_admin)} />
 
-      {live && isPlayer && (
+      {live && (isPlayer || canManage) && (
         <>
           <h2 className="section-title">Add buy-in</h2>
           <ActionForm action={addBuyIn.bind(null, id)} className="rise card relative z-20 space-y-3 overflow-visible p-4">
-            {isHost ? (
+            {canManage ? (
               <Picker
                 name="user_id"
                 label="Buy-in for"
-                defaultValue={me.id}
+                defaultValue={isPlayer ? me.id : players[0]?.id}
                 options={players.map((p) => ({ id: p.id, name: p.name, note: p.id === me.id ? "(you)" : `in ${money(p.bought)}` }))}
               />
             ) : (
@@ -82,12 +84,17 @@ export default async function SessionPage({ params }: PageProps<"/s/[id]">) {
                 </p>
               </div>
               {!live && <span className={`font-semibold tabular-nums ${tone(net)}`}>{signed(net)}</span>}
+              {live && canManage && p.bought === 0 && p.id !== game.host_id && (
+                <form action={removePlayer.bind(null, id, p.id)}>
+                  <button className="press text-[15px] text-red" aria-label={`Remove ${p.name}`}>Remove</button>
+                </form>
+              )}
             </div>
           );
         })}
       </div>
 
-      {live && isHost && others.length > 0 && (
+      {live && canManage && others.length > 0 && (
         <form action={addPlayer.bind(null, id)} className="mt-3 flex items-center gap-2">
           <div className="flex-1 rounded-xl bg-card">
             <Picker name="user_id" label="Seat a player" options={others.map((u) => ({ id: u.id, name: u.name }))} />
@@ -109,7 +116,7 @@ export default async function SessionPage({ params }: PageProps<"/s/[id]">) {
                     {b.added_by !== b.name && ` · by ${b.added_by}`}
                   </p>
                 </div>
-                {live && isHost && (
+                {live && canManage && (
                   <form action={deleteBuyIn.bind(null, id, b.id)}>
                     <button className="press text-[15px] text-red">Remove</button>
                   </form>
@@ -120,14 +127,38 @@ export default async function SessionPage({ params }: PageProps<"/s/[id]">) {
         </details>
       )}
 
-      {live && isHost && (
+      {live && canManage && (
         <>
           <h2 className="section-title">Final cashouts</h2>
-          <SettleForm action={settle.bind(null, id)} players={players.map((p) => ({ id: p.id, name: p.name, bought: p.bought }))} pot={pot} />
+          <SettleForm
+            action={settle.bind(null, id)}
+            players={players.map((p) => ({ id: p.id, name: p.name, bought: p.bought, cashout: p.cashout }))}
+            pot={pot}
+          />
         </>
       )}
-      {live && !isHost && (
+      {live && !canManage && (
         <p className="px-4 pt-6 text-center text-[13px] text-secondary">{game.host_name} will enter final cashouts when the game ends.</p>
+      )}
+
+      {me.is_admin && (
+        <>
+          <h2 className="section-title">Admin</h2>
+          <div className="card rise space-y-3 p-4">
+            <form action={renameGame.bind(null, id)} className="flex gap-2">
+              <input name="name" defaultValue={game.name} required aria-label="Session name" className="field py-2.5" />
+              <Submit className="btn w-auto px-5 py-2.5 text-[15px]">Rename</Submit>
+            </form>
+            {!live && (
+              <form action={reopenGame.bind(null, id)}>
+                <Submit className="btn-plain w-full py-3 text-[15px]">Reopen to edit buy-ins &amp; cashouts</Submit>
+              </form>
+            )}
+            <ConfirmButton action={deleteGame.bind(null, id)} confirm={`Delete “${game.name}”? This removes all its buy-ins and cashouts from everyone’s P&L.`}>
+              Delete session
+            </ConfirmButton>
+          </div>
+        </>
       )}
     </>
   );

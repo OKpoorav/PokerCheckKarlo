@@ -19,7 +19,9 @@ async function gameFor(gameId: number) {
       exists(select 1 from game_players where game_id = g.id and user_id = ${user.id}) as is_player
     from games g where g.id = ${gameId}`;
   if (!g || !(g.is_player || user.is_admin)) throw new Error("Not in this session");
-  return { user, isHost: g.host_id === user.id, live: !g.ended_at, isPlayer: g.is_player as boolean };
+  const isHost = g.host_id === user.id;
+  // RBAC: players log their own buy-ins and count rounds; the host runs their table; admins can manage any session.
+  return { user, isHost, live: !g.ended_at, isPlayer: g.is_player as boolean, canManage: isHost || user.is_admin, isAdmin: user.is_admin };
 }
 
 export async function login(_: string | null, form: FormData) {
@@ -102,19 +104,29 @@ export async function createGame(form: FormData) {
 }
 
 export async function addPlayer(gameId: number, form: FormData) {
-  const { isHost, live } = await gameFor(gameId);
-  if (!isHost || !live) return;
+  const { canManage, live } = await gameFor(gameId);
+  if (!canManage || !live) return;
   await db()`insert into game_players (game_id, user_id) values (${gameId}, ${Number(form.get("user_id"))}) on conflict do nothing`;
   refresh();
 }
 
+// Only players with no buy-ins can be removed, so money is never silently dropped.
+export async function removePlayer(gameId: number, userId: number) {
+  const { canManage, live } = await gameFor(gameId);
+  if (!canManage || !live) return;
+  await db()`delete from game_players where game_id = ${gameId} and user_id = ${userId}
+    and user_id <> (select host_id from games where id = ${gameId})
+    and not exists(select 1 from buyins where game_id = ${gameId} and user_id = ${userId})`;
+  refresh();
+}
+
 export async function addBuyIn(gameId: number, _: string | null, form: FormData) {
-  const { user, isHost, live } = await gameFor(gameId);
+  const { user, canManage, live } = await gameFor(gameId);
   if (!live) return "Session is settled";
   const amount = amountOf(form.get("amount"));
   if (!(amount > 0)) return "Enter an amount";
-  // Players log their own buy-ins; the host can log for anyone at the table.
-  const target = isHost ? Number(form.get("user_id") ?? user.id) : user.id;
+  // Players log their own buy-ins; host/admin can log for anyone at the table.
+  const target = canManage ? Number(form.get("user_id") ?? user.id) : user.id;
   const rows = await db()`
     insert into buyins (game_id, user_id, amount, added_by)
     select ${gameId}, ${target}, ${amount}, ${user.id}
@@ -126,22 +138,22 @@ export async function addBuyIn(gameId: number, _: string | null, form: FormData)
 }
 
 export async function deleteBuyIn(gameId: number, buyinId: number) {
-  const { isHost, live } = await gameFor(gameId);
-  if (!isHost || !live) return;
+  const { canManage, live } = await gameFor(gameId);
+  if (!canManage || !live) return;
   await db()`delete from buyins where id = ${buyinId} and game_id = ${gameId}`;
   refresh();
 }
 
 export async function bumpRound(gameId: number, delta: 1 | -1) {
-  const { isPlayer } = await gameFor(gameId);
-  if (!isPlayer) return;
+  const { isPlayer, isAdmin } = await gameFor(gameId);
+  if (!isPlayer && !isAdmin) return;
   await db()`update games set rounds = greatest(rounds + ${delta}, 0) where id = ${gameId} and ended_at is null`;
   refresh();
 }
 
 export async function settle(gameId: number, _: string | null, form: FormData) {
-  const { isHost, live } = await gameFor(gameId);
-  if (!isHost) return "Only the host can enter cashouts";
+  const { canManage, live } = await gameFor(gameId);
+  if (!canManage) return "Only the host can enter cashouts";
   if (!live) return "Already settled";
   const sql = db();
   const players = await sql`select user_id from game_players where game_id = ${gameId}`;
@@ -153,4 +165,25 @@ export async function settle(gameId: number, _: string | null, form: FormData) {
   ]);
   refresh();
   return null;
+}
+
+// Admin only: reopen a settled session to correct buy-ins/cashouts, then settle again.
+export async function reopenGame(gameId: number) {
+  await requireAdmin();
+  await db()`update games set ended_at = null where id = ${gameId}`;
+  refresh();
+}
+
+export async function renameGame(gameId: number, form: FormData) {
+  await requireAdmin();
+  const name = String(form.get("name") ?? "").trim();
+  if (!name) return;
+  await db()`update games set name = ${name} where id = ${gameId}`;
+  refresh();
+}
+
+export async function deleteGame(gameId: number) {
+  await requireAdmin();
+  await db()`delete from games where id = ${gameId}`;
+  redirect("/admin");
 }

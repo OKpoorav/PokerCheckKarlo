@@ -1,15 +1,22 @@
 import { requireAdmin } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { createUser, resetPassword } from "../actions";
-import { ActionForm, Header, Submit } from "../ui";
+import { ActionForm, Header, SessionList, Submit } from "../ui";
 
 export default async function Admin() {
   await requireAdmin();
-  const users = await db()`select id, name, username, is_admin from users order by name`;
+  const sql = db();
+  const [users, games] = await Promise.all([
+    sql`select id, name, username, is_admin from users order by name`,
+    sql`select g.id, g.name, g.rounds, g.created_at::text, g.ended_at is null as live,
+          (select count(*) from game_players where game_id = g.id)::int as players,
+          coalesce((select sum(amount) from buyins where game_id = g.id), 0)::float8 as pot
+        from games g order by g.ended_at is not null, g.created_at desc`,
+  ]);
 
   return (
     <>
-      <Header title="Members" back="/" />
+      <Header title="Admin" back="/" />
 
       <h2 className="section-title">Add member</h2>
       <ActionForm action={createUser} className="rise card space-y-3 p-4">
@@ -41,6 +48,13 @@ export default async function Admin() {
           </details>
         ))}
       </div>
+
+      <h2 className="section-title">All sessions ({games.length})</h2>
+      <p className="-mt-1 px-2 pb-2 text-[13px] text-secondary">Open one to edit, reopen or delete it. Amounts shown are the pot.</p>
+      <SessionList
+        showPot
+        sessions={games.map((g) => ({ id: g.id, name: g.name, created_at: g.created_at, rounds: g.rounds, players: g.players, net: g.pot, live: g.live }))}
+      />
     </>
   );
 }

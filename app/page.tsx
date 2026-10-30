@@ -40,7 +40,7 @@ export default async function Home() {
   return (
     <>
       <Header title="Tally">
-        {me.is_admin && <Link href="/admin" className="btn-plain">Members</Link>}
+        {me.is_admin && <Link href="/admin" className="btn-plain">Admin</Link>}
         <Link href="/account" className="btn-plain">Account</Link>
       </Header>
 
